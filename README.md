@@ -1,11 +1,8 @@
-# landgen_pipeline
-# landgen — Landscape Genetics Analysis Pipeline 
+# landgen — Landscape Genetics Analysis Pipeline, 
 
 By Chi-Young Choi (you0742@gmail.com)
 Ph.D. Candidate, Major in Ecology and Systematics
 Department of Biological Sciences, Graduate School, Daegu University
-
-
 
 Population 좌표, pairwise FST, 그리고 road/river 같은 landscape resistance
 raster를 입력으로 받아 IBD(Isolation by Distance) / IBR(Isolation by
@@ -13,6 +10,9 @@ Resistance) 분석과 MMRR(Multiple Matrix Regression with Randomization)까지
 수행하는 재현 가능한(reproducible) 파이프라인입니다. 특정 종이나 연구
 지역에 종속되지 않은 범용 프레임워크로, `config/`에 지역·종별 설정 파일을
 추가하는 방식으로 여러 프로젝트에 재사용할 수 있습니다.
+
+각 단계가 어떤 가정에서 무엇을 검증하는지는 [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md),
+인용 문헌은 [`docs/REFERENCES.md`](docs/REFERENCES.md)를 참고하세요.
 
 ## 구조
 
@@ -149,6 +149,71 @@ requirements.txt
   permutation 순서가 나오는 것은 아니므로, 다른 도구 결과와 permutation
   p-value를 소수점 단위까지 비교하려면 별도 검증이 필요함 (표본이 충분히
   크면 유의성 판단 자체는 일치해야 함).
+- **(사용자 확장 통합) `step03_reference.py` — IBD Raw + Slatkin 이원화**:
+  기존엔 IBD를 FST×GGD(raw) 한 가지로만 계산했는데, Slatkin 선형화
+  (`FST/(1-FST)` vs `ln(1+GGD)`)를 추가해 두 가지 IBD를 모두 계산·플롯·CSV
+  저장하도록 확장됨. 반환 dict에 `mantel_ibd`/`ibd_lm`(raw)과
+  `mantel_ibd_slatkin`/`ibd_slatkin_lm`(slatkin)이 모두 있음 — 기존
+  `mantel_ibd` 키는 그대로 유지되어 `step08_mantel_regression`과의
+  호환성은 깨지지 않음. 통합하면서 `import matplotlib.pyplot as plt`를
+  `get_pyplot()`으로 바꿔서, 이 모듈을 단독으로(01단계보다 먼저) 실행해도
+  맑은 고딕/Tahoma 폰트 설정이 보장되도록 함.
+- **(사용자 확장 통합 중 발견/수정) `step10_visualization.py`의
+  `print_final_summary`가 `ibd_ctx=None`이면 죽던 버그**: IBD Raw/Slatkin
+  요약을 추가하면서 `if ibd_ctx:`로 감싼 블록 밖에 `if "mantel_ibd" in
+  ibd_ctx:` 검사가 남아있어, `ibd_ctx`가 `None`이면(다른 곳에서 이 함수를
+  단독 호출하는 경우 등) `TypeError`가 났음. `if ibd_ctx and "mantel_ibd"
+  in ibd_ctx:` 형태로 두 곳(raw/slatkin) 다 고침.
+- **(수정됨) 워커 자동 산정의 CPU 예약 코어 수 1 -> 2**:
+  `estimate_safe_worker_count()`의 `cpu_reserve` 기본값을 1에서 2로
+  올렸다. 코어를 1개만 남기면 이 파이프라인처럼 장시간 도는 병렬 작업
+  중에 OS/다른 프로세스가 밀릴 수 있어서 여유를 더 둠. 실제 감지된 총
+  코어 수와 예약분은 이제 로그에 같이 찍힘(`"감지된 CPU N코어(2코어
+  예약)"`). `estimate_safe_worker_count(cpu_reserve=...)`로 필요시 조정
+  가능.
+- **(신규) 파이프라인 전반에 플롯 추가**: 이전엔 수치 결과(CSV)만 있고
+  시각화가 없던 지점에 다음을 추가함.
+  - `plot_matrix_heatmap()` (신규 공용 유틸, `landgen.utils`) — population
+    x population 정방행렬을 히트맵 + 셀 값 라벨로 그리는 공용 함수.
+  - `02_fst_matrix` — `02_Pairwise_FST_Heatmap.png` (FST 히트맵)
+  - `07_resistance_matrices` — Road R1/R2/R3, Road+River R1/R2/R3 총
+    6개 resistance distance matrix 히트맵 (`07_<label>_Distance_Heatmap.png`)
+  - `08_mantel_regression` — IBD 외 8개 분석(Road R1/R2/R3, River,
+    Distance_to_River, Road+River R1/R2/R3) 각각의 IBR 산점도
+    (`08_<분석명>_Plot.png`) — step03의 IBD Raw plot과 동일한 형태
+    (산점도 + 회귀선 + Mantel r/P 주석), `_plot_ibr_scatter()` 헬퍼로 공용화.
+  - `06_river_scan` — 최종 채택된 river resistance raster의 공간 지도
+    (`06_River_Cost_Map.png`) — facilitator(파랑)/neutral(흰색)/barrier(빨강)
+    발산형 컬러맵, population 위치 오버레이. `reproject_to_wgs84_for_display()`
+    (신규 공용 유틸, `raster_geom.py`)를 새로 만들어서 01단계의 DEM 배경
+    지도 로직과 공유하도록 리팩터링함 (기존 `step01`의 비공개 함수
+    `_load_dem_wgs84`를 이 공용 함수로 대체).
+- **(수정됨) 결합 resistance 명칭 `Road_River` -> `River_Road`**: 07~10단계
+  전체(파일명, CSV 컬럼명, MMRR 모델명, 플롯 제목/파일명, `road_river_comparison`
+  CSV)에서 일괄 변경. 계산 자체(Road resistance × River multiplier)는
+  그대로이고 표시 순서만 바뀐 것 — 통계 결과에는 영향 없음.
+- **(수정됨) `step09_mmrr.py`의 실제 명명 오류 — `River_Resistance` ->
+  `River_Distance`**: MMRR pairwise 컬럼/예측변수 이름이 `River_Resistance`
+  였는데, 실제 값은 `river_scan_ctx["river_dist"]` (population 간
+  cost-*distance* 행렬, `calculate_distance_matrix()` 결과)로,
+  `step08_mantel.py`에서는 같은 데이터를 이미 정확히 `River_Distance`라고
+  부르고 있었다. raw 저항값(픽셀별 배수)이 아니라 population 간 누적
+  거리라서, "Resistance"라는 이름이 실제 내용을 오도하고 있었음 — 08단계와
+  일치하도록 `River_Distance`로 통일. (참고: `Road_R1`/`Road_R2`/`Road_R3`
+  컬럼도 사실 distance 값이지만 "Resistance"라고 잘못 주장하지는 않으므로
+  그대로 둠 — 접미사가 없을 뿐 오해를 유발하는 이름은 아니었음.)
+- **(수정됨) distance 데이터 컬럼명 순서 통일 — `<X>_R1_Distance` ->
+  `<X>_Distance_R1`**: `08_mantel.py`(`final_pairwise` 컬럼)와
+  `09_mmrr.py`(`pairwise_raw`/`pairwise_data` 컬럼, MMRR 예측변수)에서
+  distance 값을 담은 컬럼명을 `Road_Distance_R1/R2/R3`,
+  `River_Road_Distance_R1/R2/R3` 형태로 통일함. **모델 이름(예:
+  `models` 딕셔너리의 키 `"Road_R1"`, `"River_Road_R1"`, `road_pairs`,
+  `Road_Model` 판별용 정규식이 참조하는 시나리오 태그)은 데이터 컬럼이
+  아니라 시나리오 식별자라서 그대로 뒀음** — 09단계의 `road_matches =
+  [p for p in predictors if re.match(r"^Road_R[123]$", p)]`처럼 옛
+  컬럼명 패턴에 의존하던 정규식은 새 컬럼명(`^Road_Distance_R[123]$`)에
+  맞게 함께 수정함 (안 고쳤으면 `Road_Model`/`Beta_Road`/`Partial_R2_Road`
+  같은 파생 컬럼이 전부 빈 값으로 나왔을 것).
 
 ## 설치
 
